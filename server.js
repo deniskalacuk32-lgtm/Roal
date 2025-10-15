@@ -30,41 +30,34 @@ const agent = useProxy ? new HttpsProxyAgent(proxyUrl) : undefined;
 
 const abort = (ms)=>{ const c=new AbortController(); const t=setTimeout(()=>c.abort(),ms); return {signal:c.signal, done:()=>clearTimeout(t)}; };
 
-// === SYSTEM PROMPT (Roal — порошковая покраска дисков) ===
+// === SYSTEM PROMPT (Roal) ===
 const SYSTEM_PROMPT = `
-Ты — «Менеджер Roal». Общайся коротко (1–3 предложения), дружелюбно и по делу. Цель — записать клиента на порошковую покраску дисков и взять телефон.
+Ты — «Менеджер Roal». Общайся кратко (1–3 предложения), дружелюбно и по делу. Цель — записать клиента на порошковую покраску дисков и взять телефон.
 
 Что делаем:
-• Полная порошковая покраска/реставрация дисков, подготовка, пескоструй, грунт, запекание в печи. Дополнительно: правка геометрии, сварка трещин, полировка, шиномонтаж.
-• Город: Ярославль (если уточнят — работаем по записи).
+• Полная порошковая покраска/реставрация, подготовка, пескоструй, грунт, запекание в печи. Дополнительно: правка геометрии, сварка трещин, полировка, шиномонтаж.
+• Город: Ярославль (работаем по записи).
 
-Обязательная воронка:
+Воронка:
 1) Поздоровайся, спроси имя.
-2) Узнай марку/модель авто, радиус дисков (R15–R22), состояние (сколы/царапины/коррозия), желаемый цвет/финиш.
-3) Дай ориентир по цене по таблице (ниже) и поясни, что итог после осмотра/объёма работ.
-4) Спроси удобный день/время для визита и попроси телефон для подтверждения записи.
-5) Подтверди запись, напомни, что правка/сварка и шиномонтаж считаются отдельно.
+2) Узнай марку/модель авто, радиус дисков (R15–R22), состояние и желаемый цвет/финиш.
+3) Дай ориентир по цене (ниже) и уточни, что итог после осмотра.
+4) Попроси удобный день/время и телефон для подтверждения записи.
 
-Прайс (ориентир за комплект, базовая покраска):
-• R15 — 11 000 ₽
-• R16 — 12 000 ₽
-• R17 — 13 000 ₽
-• R18 — 14 000 ₽
-• R19 — 15 000 ₽
-• R20 — 17 000 ₽
-• R21 — 18 000 ₽
-• R22 — 19 000 ₽
+Прайс за комплект (базовая покраска):
+R15 — 11 000 ₽ · R16 — 12 000 ₽ · R17 — 13 000 ₽ · R18 — 14 000 ₽ · R19 — 15 000 ₽ · R20 — 17 000 ₽ · R21 — 18 000 ₽ · R22 — 19 000 ₽
 Шиномонтаж: легковые — 2 500 ₽, внедорожники — 3 000 ₽.
-Если не назвали радиус — уточни и затем озвучь диапазон.
+Если не назвали радиус — уточни его.
 
 Правила:
 • Не давай ссылки. Всегда предлагай запись и проси телефон.
-• Если спрашивают «сколько по времени» — обычно 1–2 дня (в зависимости от очереди и допработ).
-• Если задают нестандартные вопросы — отвечай кратко, затем возвращай к записи и телефону.
+• Сроки обычно 1–2 дня (по очереди и допработам).
+• Отвечай на вопросы кратко и возвращай к записи/телефону.
 `;
 
 // ===== helpers =====
 function mapMessageToResponsesItem(m){
+  // user/system -> input_text; assistant -> output_text
   const isAssistant = (m.role === "assistant");
   const type = isAssistant ? "output_text" : "input_text";
   return {
@@ -75,14 +68,14 @@ function mapMessageToResponsesItem(m){
 
 // === HEALTH ===
 app.get("/", (_req,res)=>res.send("ok"));
-app.get("/__version", (_req,res)=>res.send("roal-v1 ✅"));
+app.get("/__version", (_req,res)=>res.send("roal-fast-12s ✅"));
 app.get("/health", (_req,res)=>res.json({
-  ok:true, version:"roal-v1", port:PORT,
+  ok:true, version:"roal-fast-12s", port:PORT,
   proxy:{ enabled:useProxy, scheme, host:PROXY_HOST, port:PROXY_PORT, user:!!PROXY_USER },
   openaiKeySet: !!OPENAI_API_KEY
 }));
 
-// === обычный (non-stream) ===
+// === обычный (non-stream) — одна попытка, быстрый таймаут 12с ===
 app.post("/api/chat", async (req,res)=>{
   const msgs = Array.isArray(req.body?.messages) ? req.body.messages : [];
   if(!OPENAI_API_KEY) return res.status(500).json({ error:"OPENAI_API_KEY not configured" });
@@ -97,24 +90,23 @@ app.post("/api/chat", async (req,res)=>{
         method:"POST",
         headers:{ "Authorization":`Bearer ${OPENAI_API_KEY}`, "Content-Type":"application/json" },
         agent,
-        body: JSON.stringify({ model:"gpt-4o-mini-2024-07-18", input, max_output_tokens:160 }),
+        body: JSON.stringify({ model:"gpt-4o-mini-2024-07-18", input, max_output_tokens:120 }),
         signal
       });
       const txt = await r.text().catch(()=> ""); done();
+      if(!r.ok) console.error("OpenAI error", r.status, txt.slice(0,400));
       return { ok:r.ok, status:r.status, ct: r.headers.get("content-type")||"application/json", txt };
     }catch(e){
-      done(); return { ok:false, status:504, ct:"application/json", txt: JSON.stringify({ error:"timeout_or_network", details:String(e) }) };
+      done(); 
+      return { ok:false, status:504, ct:"application/json", txt: JSON.stringify({ error:"timeout_or_network", details:String(e) }) };
     }
   }
 
-  // 1 ретрай
-  let resp = await callOnce(25000);
-  if (!resp.ok) resp = await callOnce(30000);
-
+  const resp = await callOnce(12000); // <= укладываемся в фронтовые ~22с
   res.status(resp.status).type(resp.ct).send(resp.txt);
 });
 
-// === STREAM (SSE) ===
+// === STREAM (SSE) — общий таймаут 20с ===
 app.post("/api/chat-stream", async (req, res) => {
   const msgs = Array.isArray(req.body?.messages) ? req.body.messages : [];
   if (!OPENAI_API_KEY) return res.status(500).json({ error: "OPENAI_API_KEY not configured" });
@@ -126,7 +118,7 @@ app.post("/api/chat-stream", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
 
-  const { signal, done } = abort(30000);
+  const { signal, done } = abort(20000);
 
   try {
     const upstream = await fetch("https://api.openai.com/v1/responses", {
@@ -140,7 +132,7 @@ app.post("/api/chat-stream", async (req, res) => {
       body: JSON.stringify({
         model: "gpt-4o-mini-2024-07-18",
         input,
-        max_output_tokens: 160,
+        max_output_tokens: 120,
         stream: true
       }),
       signal
@@ -165,4 +157,4 @@ app.post("/api/chat-stream", async (req, res) => {
 // совместимость (если фронт стучит на "/")
 app.post("/", (req,res)=>{ req.url="/api/chat"; app._router.handle(req,res,()=>{}); });
 
-app.listen(PORT, ()=>console.log(`✅ Roal server started on ${PORT}`));
+app.listen(PORT, ()=>console.log(`✅ Roal server (fast 12s) on ${PORT}`));
