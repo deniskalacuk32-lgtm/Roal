@@ -54,14 +54,14 @@ function mapMessageToResponsesItem(m){
 
 // === HEALTH ===
 app.get("/", (_req,res)=>res.send("ok"));
-app.get("/__version", (_req,res)=>res.send("roal-fast-2x7s ✅"));
+app.get("/__version", (_req,res)=>res.send("roal-legacy-timeouts ✅"));
 app.get("/health", (_req,res)=>res.json({
-  ok:true, version:"roal-fast-2x7s", port:PORT,
+  ok:true, version:"roal-legacy-timeouts", port:PORT,
   proxy:{ enabled:useProxy, scheme, host:PROXY_HOST, port:PROXY_PORT, user:!!PROXY_USER },
   openaiKeySet: !!OPENAI_API_KEY
 }));
 
-// === обычный (non-stream) — 2 быстрые попытки по 7с (<= 14с) ===
+// === обычный (non-stream) — 1 ретрай: 25s → 30s ===
 app.post("/api/chat", async (req,res)=>{
   const msgs = Array.isArray(req.body?.messages) ? req.body.messages : [];
   if(!OPENAI_API_KEY) return res.status(500).json({ error:"OPENAI_API_KEY not configured" });
@@ -76,26 +76,24 @@ app.post("/api/chat", async (req,res)=>{
         method:"POST",
         headers:{ "Authorization":`Bearer ${OPENAI_API_KEY}`, "Content-Type":"application/json" },
         agent,
-        body: JSON.stringify({ model:"gpt-4o-mini-2024-07-18", input, max_output_tokens:90 }),
+        body: JSON.stringify({ model:"gpt-4o-mini-2024-07-18", input, max_output_tokens:120 }),
         signal
       });
       const txt = await r.text().catch(()=> ""); done();
-      if(!r.ok) console.error("OpenAI error", r.status, txt.slice(0,400));
-      return { ok:r.ok, status:r.status, ct: r.headers.get("content-type")||"application/json", txt };
+      return { ok:r.ok, status:r.status, ct:r.headers.get("content-type")||"application/json", txt };
     }catch(e){
       done();
       return { ok:false, status:504, ct:"application/json", txt: JSON.stringify({ error:"timeout_or_network", details:String(e) }) };
     }
   }
 
-  // 2 быстрые попытки по 7 c — укладываемся в фронт (14/20/26)
-  let resp = await callOnce(7000);
-  if (!resp.ok) resp = await callOnce(7000);
+  let resp = await callOnce(25000);
+  if (!resp.ok) resp = await callOnce(30000);
 
   res.status(resp.status).type(resp.ct).send(resp.txt);
 });
 
-// === STREAM (SSE) — общий таймаут 18с (если когда-нибудь включишь стрим) ===
+// === STREAM (SSE) — общий таймаут 30s (как раньше) ===
 app.post("/api/chat-stream", async (req, res) => {
   const msgs = Array.isArray(req.body?.messages) ? req.body.messages : [];
   if (!OPENAI_API_KEY) return res.status(500).json({ error: "OPENAI_API_KEY not configured" });
@@ -107,7 +105,7 @@ app.post("/api/chat-stream", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
 
-  const { signal, done } = abort(18000);
+  const { signal, done } = abort(30000);
 
   try {
     const upstream = await fetch("https://api.openai.com/v1/responses", {
@@ -121,7 +119,7 @@ app.post("/api/chat-stream", async (req, res) => {
       body: JSON.stringify({
         model: "gpt-4o-mini-2024-07-18",
         input,
-        max_output_tokens: 90,
+        max_output_tokens: 120,
         stream: true
       }),
       signal
@@ -146,4 +144,4 @@ app.post("/api/chat-stream", async (req, res) => {
 // совместимость
 app.post("/", (req,res)=>{ req.url="/api/chat"; app._router.handle(req,res,()=>{}); });
 
-app.listen(PORT, ()=>console.log(`✅ Roal server (fast 2x7s) on ${PORT}`));
+app.listen(PORT, ()=>console.log(`✅ Roal server (legacy timeouts) on ${PORT}`));
