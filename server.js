@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import fetch from "node-fetch";
 import cors from "cors";
@@ -12,8 +13,10 @@ app.use(cors({
   maxAge: 86400
 }));
 app.options("*", (_req, res) => res.sendStatus(200));
+
 const PORT = process.env.PORT || 3000;
 
+// === ENV ===
 const {
   OPENAI_API_KEY,
   PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS,
@@ -28,9 +31,10 @@ const agent = useProxy ? new HttpsProxyAgent(proxyUrl) : undefined;
 
 const abort = (ms)=>{ const c=new AbortController(); const t=setTimeout(()=>c.abort(),ms); return {signal:c.signal, done:()=>clearTimeout(t)}; };
 
-// === SYSTEM PROMPT (Менеджер Павел) ===
+// === SYSTEM PROMPT (ваш текст + CONTROL) ===
 const SYSTEM_PROMPT = `
 Ты — виртуальный менеджер по имени Павел, эксперт по продаже услуги порошковой покраски автомобильных дисков.
+
 Твоя задача — вести естественный, доброжелательный диалог с посетителем сайта и довести его до записи на осмотр или покраску дисков.
 
 Общайся просто и живо, как реальный человек, без шаблонных формулировок. Всегда используй техники продаж:
@@ -39,6 +43,7 @@ const SYSTEM_PROMPT = `
 — мягкое формирование ценности перед озвучиванием цены;
 — альтернативные варианты выбора (сегодня/завтра, утро/вечер);
 — закрытие на действие — согласование визита.
+
 Говори короткими фразами, с теплом и уверенностью, создавая ощущение, что с клиентом общается опытный специалист, а не бот.
 
 Информация о компании:
@@ -63,8 +68,8 @@ R22 — 19 000 ₽
 
 Пошаговая структура общения:
 1) Приветствие и вовлечение.
-2) Уточнение деталей не сразу все, а поэтапно, отдельными короткими сообщениями (марка/модель, радиус R15–R22, нужен ли шиномонтаж) — живо и по-человечески.
-3) Запрос имени и телефона (зачем нужен — для связи/подтверждения).
+2) Уточнение деталей не сразу все а поэтапно отдельными сообщениями чтобы вызвать доверие но не сухо чтобы было живое общение (марка/модель, радиус R15–R22, нужен ли шиномонтаж).
+3) Запрос имени и телефона (почему нужен).
 4) Согласование даты визита (сегодня/завтра; утро/вечер).
 5) Если спрашивают цену — сначала принцип и диапазон, затем приглашение подъехать.
 6) Сомневается — аргументы про долговечность, защиту, гарантию.
@@ -72,40 +77,40 @@ R22 — 19 000 ₽
 
 Главная цель: получить имя, телефон и согласовать дату визита.
 
-УПРАВЛЕНИЕ ИНТЕРФЕЙСОМ (ОЧЕНЬ ВАЖНО):
+УПРАВЛЕНИЕ ИНТЕРФЕЙСОМ:
 — В КАЖДОМ ответе добавляй ПОСЛЕДНЕЙ строкой метку:
 ###CONTROL: {"action":"...", "date_hint":"...", "name_hint":"..."}
 — JSON одной строкой без комментариев и лишнего текста.
 — Варианты action:
    * "none" — ничего не делать.
    * "ask_slot" — ты предложил согласовать дату/время (сегодня/завтра; утро/вечер) и ждёшь конкретики.
-   * "booking_intent" — пользователь согласился записаться или назвал конкретику (например «завтра утром») — фронт должен запустить антифрод и затем открыть форму записи.
-— Поле "date_hint": "today" | "tomorrow" | "" — если в речи прозвучало «сегодня/завтра».
-— Поле "name_hint": если знаешь имя — впиши его.
+   * "booking_intent" — пользователь согласился записаться или назвал конкретику («завтра утром») — фронт должен запустить антифрод и затем открыть форму записи.
+— "date_hint": "today" | "tomorrow" | "" — если прозвучало сегодня/завтра.
+— "name_hint": если знаешь имя — укажи.
 
-Примеры последних строк:
+Примеры:
 ###CONTROL: {"action":"ask_slot","date_hint":"","name_hint":"Денис"}
 ###CONTROL: {"action":"booking_intent","date_hint":"tomorrow","name_hint":"Олег"}
 ###CONTROL: {"action":"none","date_hint":"","name_hint":""}
 `;
 
-// map to OpenAI responses format
+// ===== helpers =====
 function mapMessageToResponsesItem(m){
   const isAssistant = (m.role === "assistant");
   const type = isAssistant ? "output_text" : "input_text";
   return { role: m.role, content: [{ type, text: String(m.content ?? "") }] };
 }
 
-// health
+// === HEALTH ===
 app.get("/", (_req,res)=>res.send("ok"));
-app.get("/__version", (_req,res)=>res.send("pavel-fast-2x7s ✅"));
+app.get("/__version", (_req,res)=>res.send("roal-v2-control ✅"));
 app.get("/health", (_req,res)=>res.json({
-  ok:true, version:"pavel-fast-2x7s", port:PORT,
+  ok:true, version:"roal-v2-control", port:PORT,
   proxy:{ enabled:useProxy, scheme, host:PROXY_HOST, port:PROXY_PORT, user:!!PROXY_USER },
   openaiKeySet: !!OPENAI_API_KEY
 }));
 
-// non-stream: 2 быстрые попытки по 7с
+// === обычный (non-stream) ===
 app.post("/api/chat", async (req,res)=>{
   const msgs = Array.isArray(req.body?.messages) ? req.body.messages : [];
   if(!OPENAI_API_KEY) return res.status(500).json({ error:"OPENAI_API_KEY not configured" });
@@ -120,70 +125,30 @@ app.post("/api/chat", async (req,res)=>{
         method:"POST",
         headers:{ "Authorization":`Bearer ${OPENAI_API_KEY}`, "Content-Type":"application/json" },
         agent,
-        body: JSON.stringify({ model:"gpt-4o-mini-2024-07-18", input, max_output_tokens:90 }),
+        body: JSON.stringify({
+          model:"gpt-4o-mini-2024-07-18",
+          input,
+          max_output_tokens: 260,     // увеличено, чтобы влезал текст + CONTROL
+          temperature: 0.9
+        }),
         signal
       });
       const txt = await r.text().catch(()=> ""); done();
-      return { ok:r.ok, status:r.status, ct:r.headers.get("content-type")||"application/json", txt };
+      return { ok:r.ok, status:r.status, ct: r.headers.get("content-type")||"application/json", txt };
     }catch(e){
-      done();
-      return { ok:false, status:504, ct:"application/json", txt: JSON.stringify({ error:"timeout_or_network", details:String(e) }) };
+      done(); return { ok:false, status:504, ct:"application/json",
+        txt: JSON.stringify({ error:"timeout_or_network", details:String(e) }) };
     }
   }
 
-  let resp = await callOnce(7000);
-  if (!resp.ok) resp = await callOnce(7000);
+  let resp = await callOnce(25000);
+  if (!resp.ok) resp = await callOnce(30000);
 
   res.status(resp.status).type(resp.ct).send(resp.txt);
 });
 
-// stream (опционально)
-app.post("/api/chat-stream", async (req, res) => {
-  const msgs = Array.isArray(req.body?.messages) ? req.body.messages : [];
-  if (!OPENAI_API_KEY) return res.status(500).json({ error: "OPENAI_API_KEY not configured" });
-
-  const normalized = [{ role: "system", content: SYSTEM_PROMPT }, ...msgs];
-  const input = normalized.map(mapMessageToResponsesItem);
-
-  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-
-  const { signal, done } = abort(18000);
-
-  try {
-    const upstream = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream"
-      },
-      agent,
-      body: JSON.stringify({
-        model: "gpt-4o-mini-2024-07-18",
-        input,
-        max_output_tokens: 90,
-        stream: true
-      }),
-      signal
-    });
-
-    if (!upstream.ok || !upstream.body) {
-      const txt = await upstream.text().catch(()=> "");
-      res.write(`data: ${JSON.stringify({ type:"response.error", message:`HTTP ${upstream.status}: ${txt}` })}\n\n`);
-      return res.end();
-    }
-
-    for await (const chunk of upstream.body) res.write(chunk);
-    done();
-    res.end();
-  } catch (e) {
-    done();
-    res.write(`data: ${JSON.stringify({ type:"response.error", message:String(e?.message || e) })}\n\n`);
-    res.end();
-  }
-});
-
+// совместимость
 app.post("/", (req,res)=>{ req.url="/api/chat"; app._router.handle(req,res,()=>{}); });
-app.listen(PORT, ()=>console.log(`✅ Pavel fast server on ${PORT}`));
+
+app.listen(PORT, ()=>console.log(`✅ Server roal-v2-control on ${PORT}`));
+
