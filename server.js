@@ -12,10 +12,8 @@ app.use(cors({
   maxAge: 86400
 }));
 app.options("*", (_req, res) => res.sendStatus(200));
-
 const PORT = process.env.PORT || 3000;
 
-// === ENV ===
 const {
   OPENAI_API_KEY,
   PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS,
@@ -67,33 +65,34 @@ R22 — 19 000 ₽
 
 Пошаговая структура общения:
 1) Приветствие и вовлечение.
-2) Уточнение деталей не сразу все а поэтапно отдельными сообщениями чтобы вызвать доверие но не сухо чтобы было живое общение (марка/модель, радиус R15–R22, нужен ли шиномонтаж).
+2) Уточнение деталей (марка/модель, радиус R15–R22, нужен ли шиномонтаж).
 3) Запрос имени и телефона (почему нужен).
 4) Согласование даты визита (сегодня/завтра; утро/вечер).
-5) Если спрашивают цену — сначала принцип и диапазон, затем приглашение подъехать.
-6) Сомневается — аргументы про долговечность, защиту, гарантию.
-7) Завершение — зафиксировать дату/время и адрес.
+5) Если спрашивают цену — сначала принцип и диапазон, затем приглашение подъехать/прислать фото.
+6) Фото — да, принять; скажи, что мастер оценит.
+7) Сомневается — аргументы про долговечность, защиту, гарантию.
+8) Завершение — зафиксировать дату/время и адрес.
 
 Главная цель: получить имя, телефон и согласовать дату визита.
 `;
 
-// ===== helpers =====
+// map to OpenAI responses format
 function mapMessageToResponsesItem(m){
   const isAssistant = (m.role === "assistant");
   const type = isAssistant ? "output_text" : "input_text";
   return { role: m.role, content: [{ type, text: String(m.content ?? "") }] };
 }
 
-// === HEALTH ===
+// health
 app.get("/", (_req,res)=>res.send("ok"));
-app.get("/__version", (_req,res)=>res.send("roal-legacy-timeouts-pavel ✅"));
+app.get("/__version", (_req,res)=>res.send("pavel-fast-2x7s ✅"));
 app.get("/health", (_req,res)=>res.json({
-  ok:true, version:"roal-legacy-timeouts-pavel", port:PORT,
+  ok:true, version:"pavel-fast-2x7s", port:PORT,
   proxy:{ enabled:useProxy, scheme, host:PROXY_HOST, port:PROXY_PORT, user:!!PROXY_USER },
   openaiKeySet: !!OPENAI_API_KEY
 }));
 
-// === обычный (non-stream) — 1 ретрай: 25s → 30s ===
+// non-stream: 2 быстрые попытки по 7с
 app.post("/api/chat", async (req,res)=>{
   const msgs = Array.isArray(req.body?.messages) ? req.body.messages : [];
   if(!OPENAI_API_KEY) return res.status(500).json({ error:"OPENAI_API_KEY not configured" });
@@ -108,7 +107,7 @@ app.post("/api/chat", async (req,res)=>{
         method:"POST",
         headers:{ "Authorization":`Bearer ${OPENAI_API_KEY}`, "Content-Type":"application/json" },
         agent,
-        body: JSON.stringify({ model:"gpt-4o-mini-2024-07-18", input, max_output_tokens:120 }),
+        body: JSON.stringify({ model:"gpt-4o-mini-2024-07-18", input, max_output_tokens:90 }),
         signal
       });
       const txt = await r.text().catch(()=> ""); done();
@@ -119,13 +118,13 @@ app.post("/api/chat", async (req,res)=>{
     }
   }
 
-  let resp = await callOnce(25000);
-  if (!resp.ok) resp = await callOnce(30000);
+  let resp = await callOnce(7000);
+  if (!resp.ok) resp = await callOnce(7000);
 
   res.status(resp.status).type(resp.ct).send(resp.txt);
 });
 
-// === STREAM (SSE) — общий таймаут 30s ===
+// stream (опционально)
 app.post("/api/chat-stream", async (req, res) => {
   const msgs = Array.isArray(req.body?.messages) ? req.body.messages : [];
   if (!OPENAI_API_KEY) return res.status(500).json({ error: "OPENAI_API_KEY not configured" });
@@ -137,7 +136,7 @@ app.post("/api/chat-stream", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
 
-  const { signal, done } = abort(30000);
+  const { signal, done } = abort(18000);
 
   try {
     const upstream = await fetch("https://api.openai.com/v1/responses", {
@@ -151,7 +150,7 @@ app.post("/api/chat-stream", async (req, res) => {
       body: JSON.stringify({
         model: "gpt-4o-mini-2024-07-18",
         input,
-        max_output_tokens: 120,
+        max_output_tokens: 90,
         stream: true
       }),
       signal
@@ -173,7 +172,5 @@ app.post("/api/chat-stream", async (req, res) => {
   }
 });
 
-// совместимость
 app.post("/", (req,res)=>{ req.url="/api/chat"; app._router.handle(req,res,()=>{}); });
-
-app.listen(PORT, ()=>console.log(`✅ Roal server (legacy timeouts Pavel) on ${PORT}`));
+app.listen(PORT, ()=>console.log(`✅ Pavel fast server on ${PORT}`));
