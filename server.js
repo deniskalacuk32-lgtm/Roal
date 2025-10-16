@@ -24,10 +24,17 @@ const {
   DISABLE_PROXY = "false",
 
   // Telegram (можно задать в Render → Environment)
-  TELEGRAM_BOT_TOKEN = "8429593653:AAE4xK1TYde0VPOKUuaqcnC6r6VZ2CEVxmo", // ⬅ временно
-  TELEGRAM_CHAT_ID   = "1803810817",                                      // ⬅ ваш chat_id
-  LEAD_FORWARD_URL   = "" // опционально — если хотите дублировать лид в Google Sheets/CRM
+  TELEGRAM_BOT_TOKEN = "8429593653:AAE4xK1TYde0VPOKUuaqcnC6r6VZ2CEVxmo",
+  // теперь поддерживаем список ID через запятую
+  TELEGRAM_CHAT_IDS = "1803810817,939982620",
+
+  LEAD_FORWARD_URL   = "" // опционально — дублировать лид в Google Sheets/CRM
 } = process.env;
+
+const CHAT_IDS = String(TELEGRAM_CHAT_IDS || "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
 
 const useProxy = String(DISABLE_PROXY).toLowerCase() !== "true";
 const scheme = (PROXY_SCHEME || "http").toLowerCase();
@@ -138,6 +145,22 @@ app.post("/api/chat", async (req,res)=>{
   res.status(resp.status).type(resp.ct).send(resp.txt);
 });
 
+/* ===== Telegram helper: отправка всем CHAT_IDS ===== */
+async function sendTelegramToAll(text){
+  if(!TELEGRAM_BOT_TOKEN || CHAT_IDS.length===0) return { ok:false, message:"no token or chat ids" };
+
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+  const payloads = CHAT_IDS.map(chat_id => ({
+    method: "POST",
+    headers: { "Content-Type":"application/json" },
+    body: JSON.stringify({ chat_id, text })
+  }));
+
+  const results = await Promise.allSettled(payloads.map(p => fetch(url, p)));
+  const ok = results.some(r => r.status === "fulfilled");
+  return { ok, results: results.map(r => r.status) };
+}
+
 /* ===== ЛИДЫ: /lead ===== */
 app.post("/lead", async (req, res)=>{
   try{
@@ -154,25 +177,15 @@ app.post("/lead", async (req, res)=>{
       return res.status(400).json({ ok:false, error:"name/phone/date required" });
     }
 
-    // Telegram
-    let tgOk = false, tgResp = null;
-    if(TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID){
-      const text =
+    const tgText =
 `🆕 Заявка на покраску дисков
 Имя: ${name}
 Телефон: ${phone}
 Дата: ${date}${time?`\nВремя: ${time}`:''}${note?`\nКомментарий: ${note}`:''}
 Источник: ${source}
 Создано: ${createdAt}`;
-      const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-      const r = await fetch(url,{
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text })
-      });
-      tgOk = r.ok;
-      tgResp = await r.text().catch(()=>null);
-    }
+
+    const tg = await sendTelegramToAll(tgText);
 
     // Доп. форвард (если задан)
     let fwdOk = false, fwdResp = null;
@@ -186,7 +199,7 @@ app.post("/lead", async (req, res)=>{
       fwdResp = await r.text().catch(()=>null);
     }
 
-    return res.json({ ok:true, telegram: tgOk, tgResp, forward: fwdOk, fwdResp });
+    return res.json({ ok:true, telegram: tg.ok, tgResults: tg.results, forward: fwdOk, fwdResp });
   }catch(e){
     return res.status(500).json({ ok:false, error:String(e) });
   }
